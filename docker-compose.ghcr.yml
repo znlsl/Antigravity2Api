@@ -21,3 +21,6 @@ services:
       - ./log:/app/log
 
     restart: unless-stopped
+    
+    env_file:
+      - .env
