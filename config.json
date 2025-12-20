@@ -5,6 +5,7 @@
   },
   "api_keys": [
     "sk-your-secret-key-1"
+    "sk-your-secret-key-2"
   ],
   "proxy": {
     "enabled": true,

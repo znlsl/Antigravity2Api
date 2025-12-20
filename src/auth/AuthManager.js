@@ -69,6 +69,18 @@ function normalizeQuotaGroup(group) {
   return "gemini";
 }
 
+function sanitizeCredentialFileName(fileName) {
+  const name = String(fileName || "").trim();
+  if (!name) throw new Error("file name is required");
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    throw new Error("invalid file name");
+  }
+  if (!name.endsWith(".json")) {
+    throw new Error("invalid credentials file (must be .json)");
+  }
+  return name;
+}
+
 class AuthManager {
   constructor(options = {}) {
     this.authDir = options.authDir || path.resolve(process.cwd(), "auths");
@@ -115,6 +127,18 @@ class AuthManager {
     return this.accounts.length;
   }
 
+  getAccountsSummary() {
+    return this.accounts.map((account, index) => ({
+      index,
+      file: path.basename(account.filePath),
+      email: account.creds?.email || null,
+      projectId: account.creds?.projectId || null,
+      expiry_date: Number.isFinite(account.creds?.expiry_date) ? account.creds.expiry_date : null,
+      token_type: account.creds?.token_type || null,
+      scope: account.creds?.scope || null,
+    }));
+  }
+
   getCurrentAccountIndex(group) {
     const g = normalizeQuotaGroup(group);
     if (!this.currentAccountIndexByGroup || typeof this.currentAccountIndexByGroup !== "object") {
@@ -142,6 +166,41 @@ class AuthManager {
       "info",
       `🔄 [${g}] Rotating to account ${nextIndex + 1}/${this.accounts.length} (${accountName})`
     );
+    return true;
+  }
+
+  async deleteAccountByFile(fileName) {
+    const safeName = sanitizeCredentialFileName(fileName);
+    const idx = this.accounts.findIndex((a) => path.basename(a.filePath) === safeName);
+    if (idx === -1) {
+      return false;
+    }
+
+    const account = this.accounts[idx];
+
+    if (this.tokenRefresher) {
+      this.tokenRefresher.cancelRefresh(account);
+    } else if (account.refreshTimer) {
+      clearTimeout(account.refreshTimer);
+      account.refreshTimer = null;
+    }
+
+    await fs.unlink(account.filePath).catch(() => {});
+    this.accounts.splice(idx, 1);
+
+    for (const group of ["claude", "gemini"]) {
+      const current = this.getCurrentAccountIndex(group);
+      if (this.accounts.length === 0) {
+        this.setCurrentAccountIndex(group, 0);
+        continue;
+      }
+      if (idx < current) {
+        this.setCurrentAccountIndex(group, Math.max(0, current - 1));
+      } else if (idx === current) {
+        this.setCurrentAccountIndex(group, Math.min(current, this.accounts.length - 1));
+      }
+    }
+
     return true;
   }
 
@@ -193,6 +252,22 @@ class AuthManager {
     } catch (err) {
       this.log("error", `Error loading accounts: ${err.message || err}`);
     }
+  }
+
+  async reloadAccounts() {
+    if (Array.isArray(this.accounts)) {
+      for (const account of this.accounts) {
+        if (this.tokenRefresher) {
+          this.tokenRefresher.cancelRefresh(account);
+        } else if (account?.refreshTimer) {
+          clearTimeout(account.refreshTimer);
+          account.refreshTimer = null;
+        }
+      }
+    }
+
+    await this.loadAccounts();
+    return this.getAccountsSummary();
   }
 
   async fetchProjectId(accessToken) {

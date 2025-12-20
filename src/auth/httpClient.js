@@ -125,8 +125,32 @@ async function fetchUserInfo(accessToken, limiter) {
   return null;
 }
 
-async function exchangeCodeForToken(code, port = 50000, limiter) {
+function resolveRedirectUri(portOrRedirectUri) {
+  if (typeof portOrRedirectUri === "string" && portOrRedirectUri.trim()) {
+    return portOrRedirectUri.trim();
+  }
+
+  if (
+    portOrRedirectUri &&
+    typeof portOrRedirectUri === "object" &&
+    typeof portOrRedirectUri.redirectUri === "string" &&
+    portOrRedirectUri.redirectUri.trim()
+  ) {
+    return portOrRedirectUri.redirectUri.trim();
+  }
+
+  const port =
+    typeof portOrRedirectUri === "number"
+      ? portOrRedirectUri
+      : typeof portOrRedirectUri?.port === "number"
+        ? portOrRedirectUri.port
+        : 50000;
+  return `http://localhost:${port}/oauth-callback`;
+}
+
+async function exchangeCodeForToken(code, portOrRedirectUri = 50000, limiter) {
   const { clientId, clientSecret } = getOAuthClient();
+  const redirectUri = resolveRedirectUri(portOrRedirectUri);
   await waitForApiSlot(limiter);
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -142,7 +166,7 @@ async function exchangeCodeForToken(code, port = 50000, limiter) {
       client_id: clientId,
       code: code,
       grant_type: "authorization_code",
-      redirect_uri: `http://localhost:${port}/oauth-callback`,
+      redirect_uri: redirectUri,
       client_secret: clientSecret,
     }).toString(),
   });

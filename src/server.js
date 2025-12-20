@@ -6,9 +6,12 @@ const path = require("path");
 
 const { getConfig } = require("./utils/config");
 const { createLogger } = require("./utils/logger");
+const { extractApiKey, parseJsonBody } = require("./utils/http");
 
 const { AuthManager, OAuthFlow } = require("./auth");
 const { ClaudeApi, GeminiApi, UpstreamClient } = require("./api");
+const { handleAdminRoute, handleOAuthCallbackRoute } = require("./admin/routes");
+const { handleUiRoute } = require("./ui/routes");
 
 const config = getConfig();
 const { log, logFile } = createLogger();
@@ -27,40 +30,9 @@ const isAddFlow = process.argv.includes("--add");
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, anthropic-api-key, x-goog-api-key, anthropic-version",
 };
-
-function extractApiKey(headers) {
-  const authHeader = headers["authorization"];
-  let apiKey = null;
-  if (authHeader) {
-    const parts = String(authHeader).trim().split(/\s+/);
-    if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
-      apiKey = parts[1];
-    } else {
-      apiKey = String(authHeader).trim();
-    }
-  } else {
-    const xApiKey = headers["x-api-key"] || headers["anthropic-api-key"] || headers["x-goog-api-key"];
-    if (xApiKey) apiKey = String(xApiKey).trim();
-  }
-  return apiKey;
-}
-
-async function parseJsonBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString();
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    const err = new Error("INVALID_JSON");
-    err.cause = e;
-    throw err;
-  }
-}
 
 async function writeResponse(res, apiResponse) {
   const headers = { ...CORS_HEADERS, ...(apiResponse.headers || {}) };
@@ -107,23 +79,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // API Key Auth
-  if (config.api_keys && config.api_keys.length > 0) {
-    const apiKey = extractApiKey(req.headers);
-    if (!apiKey || !config.api_keys.includes(apiKey)) {
-      log("warn", `⛔ Unauthorized access attempt from ${req.socket.remoteAddress}`);
-      log("warn", `Received headers: ${JSON.stringify(req.headers)}`);
-      res.writeHead(401, { ...CORS_HEADERS, "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "Invalid API Key" } }));
-      return;
-    }
-  }
-
   log("info", `Received request: ${req.method} ${req.url}`);
 
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
 
   try {
+    // Web UI (public)
+    const uiResponse = await handleUiRoute(req, parsedUrl);
+    if (uiResponse) {
+      return await writeResponse(res, uiResponse);
+    }
+
+    // OAuth callback (public, state-protected)
+    const oauthCallbackResp = await handleOAuthCallbackRoute(req, parsedUrl, { authManager });
+    if (oauthCallbackResp) {
+      return await writeResponse(res, oauthCallbackResp);
+    }
+
+    // Admin API (API key protected inside handler)
+    const adminResp = await handleAdminRoute(req, parsedUrl, { authManager, config, logger: log });
+    if (adminResp) {
+      return await writeResponse(res, adminResp);
+    }
+
+    // API Key Auth for upstream-compatible API endpoints
+    if (config.api_keys && config.api_keys.length > 0) {
+      const pathname = parsedUrl.pathname || "";
+      const isApiEndpoint = pathname.startsWith("/v1/") || pathname === "/v1/models" || pathname.startsWith("/v1beta/");
+
+      if (isApiEndpoint) {
+        const apiKey = extractApiKey(req.headers);
+        if (!apiKey || !config.api_keys.includes(apiKey)) {
+          log("warn", `⛔ Unauthorized API access attempt from ${req.socket.remoteAddress}`);
+          res.writeHead(401, { ...CORS_HEADERS, "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "Invalid API Key" } }));
+          return;
+        }
+      }
+    }
+
     // Claude models list
     if (parsedUrl.pathname === "/v1/models" && req.method === "GET") {
       return await writeResponse(res, await claudeApi.handleListModels());
@@ -189,13 +183,9 @@ const server = http.createServer(async (req, res) => {
 (async () => {
   await authManager.loadAccounts();
 
-  const shouldAutoOAuth = !isAddFlow && (!authManager.accounts || authManager.accounts.length === 0);
-
-  if (isAddFlow || shouldAutoOAuth) {
+  if (isAddFlow) {
     if (isAddFlow) {
       log("info", "🚀 Starting flow to add a new account...");
-    } else {
-      log("warn", "No accounts found. Starting OAuth flow to add the first account...");
     }
     const oauthFlow = new OAuthFlow({ authManager, logger: log, rateLimiter: authManager.apiLimiter });
     oauthFlow.startInteractiveFlow();
@@ -212,10 +202,12 @@ const server = http.createServer(async (req, res) => {
     log("info", `==================================================`);
 
     if (authManager.accounts && authManager.accounts.length === 0) {
-      log("warn", "⚠️ No accounts loaded yet. OAuth flow should be running to add the first account.");
-      log("warn", "ℹ️  If the browser didn't open, run: node src/server.js --add");
+      log("warn", "⚠️ No accounts loaded yet.");
+      log("info", `ℹ️  Open admin UI: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/`);
+      log("info", "ℹ️  Or run CLI OAuth: node src/server.js --add");
     } else {
-      log("info", `ℹ️  To add more accounts, run: node src/server.js --add`);
+      log("info", `ℹ️  Admin UI: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/`);
+      log("info", `ℹ️  To add accounts via CLI: node src/server.js --add`);
     }
   });
 })();

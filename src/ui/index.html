@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Antigravity2Api 管理</title>
+    <link rel="stylesheet" href="/ui/style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <div>
+          <h1>Antigravity2Api 管理</h1>
+          <p class="sub">账号管理（OAuth 添加 / 删除 / 查看状态）</p>
+        </div>
+        <div class="actions">
+          <button id="btnReload" class="btn">重新加载</button>
+          <button id="btnAdd" class="btn primary">OAuth 添加账号</button>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>访问控制</h2>
+        <p class="hint">
+          如果你在 <code>config.json</code> 中配置了 <code>api_keys</code>，请先在这里输入 Key（浏览器本地保存，不会上传到服务端）。
+        </p>
+        <div class="row">
+          <input id="apiKey" class="input" type="password" placeholder="API Key（可为空）" />
+          <button id="btnSaveKey" class="btn">保存</button>
+          <button id="btnClearKey" class="btn ghost">清除</button>
+        </div>
+        <div id="keyStatus" class="status"></div>
+      </section>
+
+      <section class="card">
+        <h2>OAuth</h2>
+        <div id="oauthBox" class="oauth">
+          <div class="oauthRow">
+            <span class="label">状态</span>
+            <span id="oauthStatus" class="mono">未开始</span>
+          </div>
+          <div class="oauthRow">
+            <span class="label">授权链接</span>
+            <a id="oauthUrl" class="mono" href="#" target="_blank" rel="noreferrer">-</a>
+            <button id="btnCopyUrl" class="btn small">复制</button>
+          </div>
+          <div class="oauthRow">
+            <span class="label">state</span>
+            <span id="oauthState" class="mono">-</span>
+          </div>
+          <p class="hint">
+            授权成功后会自动写入 <code>auths/*.json</code>，并自动刷新账号列表。
+          </p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>账号列表</h2>
+        <div id="accountsMeta" class="hint"></div>
+        <div class="tableWrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>Email</th>
+                <th>Project ID</th>
+                <th>过期时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span class="hint">
+          API 仍然保持原有路径：Claude <code>/v1/messages</code>，Gemini <code>/v1beta</code>。
+        </span>
+      </footer>
+    </div>
+
+    <script src="/ui/app.js" defer></script>
+  </body>
+</html>
+
