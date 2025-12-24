@@ -1,6 +1,6 @@
 # Antigravity2Api
 
-本服务将 Antigravity 代理出来，转换为标准的 Claude API 和 Gemini API 接口，支持多账号轮询、API Key 认证以及自定义代理配置。
+本服务将 Antigravity 代理出来，转换为标准的 Claude API、 Gemini API、OpenAI Chat API 接口，支持多账号轮询、API Key 认证以及自定义代理配置。
 
 特性：
 
@@ -180,6 +180,7 @@ docker compose up -d --build
 *   **API 地址 (Endpoint)**: `http://localhost:3000` (或 `http://<本机IP>:3000`)
     *   Claude 兼容路径: `http://localhost:3000/v1/messages`
     *   Gemini 原生路径: `http://localhost:3000/v1beta`
+    *   OpenAI 兼容路径：`http://localhost:3000/v1/chat/completions`
 *   **API 密钥 (API Key)**: 填写你在 `AG2API_API_KEYS` 中配置的任意一个 Key。
     *   支持的传递方式：`Authorization: Bearer <key>` / `x-api-key` / `anthropic-api-key` / `x-goog-api-key`
 
