@@ -9,7 +9,7 @@ const { createLogger } = require("./utils/logger");
 const { extractApiKey, parseJsonBody } = require("./utils/http");
 
 const { AuthManager, OAuthFlow } = require("./auth");
-const { ClaudeApi, GeminiApi, UpstreamClient } = require("./api");
+const { ClaudeApi, GeminiApi, OpenaiApi, UpstreamClient } = require("./api");
 const { handleAdminRoute, handleOAuthCallbackRoute } = require("./admin/routes");
 const { handleUiRoute } = require("./ui/routes");
 
@@ -25,6 +25,7 @@ const authManager = new AuthManager({
 const upstreamClient = new UpstreamClient(authManager, { logger: log });
 const claudeApi = new ClaudeApi({ authManager, upstreamClient, logger: log, debug: debugRequestResponse });
 const geminiApi = new GeminiApi({ authManager, upstreamClient, logger: log, debug: debugRequestResponse });
+const openaiApi = new OpenaiApi({ claudeApi, geminiApi, logger: log });
 
 const isAddFlow = process.argv.includes("--add");
 
@@ -166,6 +167,12 @@ const server = http.createServer(async (req, res) => {
       return await writeResponse(res, await claudeApi.handleMessages(body));
     }
 
+    // OpenAI Compatible Chat Completions
+    if (parsedUrl.pathname === "/v1/chat/completions" && req.method === "POST") {
+      const body = await parseJsonBody(req);
+      return await writeResponse(res, await openaiApi.handleChatCompletions(body));
+    }
+
     res.writeHead(404, { ...CORS_HEADERS, "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { message: `Not Found: ${req.method} ${req.url}` } }));
   } catch (err) {
@@ -208,6 +215,7 @@ const server = http.createServer(async (req, res) => {
     log("info", `📍 Address: http://${HOST}:${PORT}`);
     log("info", `🔗 Gemini Endpoint: http://${HOST}:${PORT}/v1beta`);
     log("info", `🔗 Claude Endpoint: http://${HOST}:${PORT}/v1/messages`);
+    log("info", `🔗 OpenAI Endpoint: http://${HOST}:${PORT}/v1/chat/completions`);
     log("info", `📝 Log file: ${logFile}`);
     log("info", `==================================================`);
 
