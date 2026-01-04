@@ -8,6 +8,7 @@ class UpstreamClient {
     this.logger = options.logger || null;
   }
 
+  // 基础日志方法（兼容旧 API）
   log(title, data) {
     if (this.logger) return this.logger(title, data);
     if (data !== undefined && data !== null) {
@@ -15,6 +16,44 @@ class UpstreamClient {
     } else {
       console.log(`[${title}]`);
     }
+  }
+
+  // 上游调用日志
+  logUpstream(action, options = {}) {
+    if (this.logger && typeof this.logger.logUpstream === "function") {
+      return this.logger.logUpstream(action, options);
+    }
+    // 回退到基础日志
+    const { method, account, model, group, attempt, maxAttempts, status, duration, error } = options;
+    const attemptStr = attempt && maxAttempts ? `[${attempt}/${maxAttempts}]` : "";
+    const message = `${action} ${attemptStr} [${group || ""}] @${account || "unknown"} ${model || ""}`;
+    this.log("upstream", { message, status, duration, error });
+  }
+
+  // 重试日志
+  logRetry(reason, options = {}) {
+    if (this.logger && typeof this.logger.logRetry === "function") {
+      return this.logger.logRetry(reason, options);
+    }
+    // 回退到基础日志
+    const { attempt, maxAttempts, delayMs, account, error, nextAction } = options;
+    this.log("retry", { reason, attempt, maxAttempts, delayMs, account, error, nextAction });
+  }
+
+  // 配额日志
+  logQuota(event, options = {}) {
+    if (this.logger && typeof this.logger.logQuota === "function") {
+      return this.logger.logQuota(event, options);
+    }
+    this.log("quota", { event, ...options });
+  }
+
+  // 错误日志
+  logError(message, error, options = {}) {
+    if (this.logger && typeof this.logger.logError === "function") {
+      return this.logger.logError(message, error, options);
+    }
+    this.log("error", { message, error: error?.message || error, ...options });
   }
 
   getMaxAttempts() {
@@ -74,6 +113,20 @@ class UpstreamClient {
     return null;
   }
 
+  parseErrorDetails(errText) {
+    try {
+      const errObj = JSON.parse(errText);
+      return {
+        code: errObj.error?.code,
+        message: errObj.error?.message,
+        status: errObj.error?.status,
+        details: errObj.error?.details,
+      };
+    } catch (_) {
+      return { message: errText };
+    }
+  }
+
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -102,16 +155,36 @@ class UpstreamClient {
     let lastResponse = null;
     const maxAttempts = this.getMaxAttempts();
 
+    this.logUpstream(`开始调用 v1internal:${method}`, {
+      method,
+      group: quotaGroup,
+      model: options.model,
+      maxAttempts,
+    });
+
     for (let attempts = 0; attempts < maxAttempts; attempts++) {
+      const attemptNum = attempts + 1;
       let creds;
+      
       try {
         creds = await this.auth.getCredentials(quotaGroup);
       } catch (e) {
+        this.logError(`获取凭证失败 [${quotaGroup}]`, e, { attempt: attemptNum, maxAttempts });
         throw e;
       }
 
       const accountName = creds?.account?.filePath ? path.basename(creds.account.filePath) : "unknown-account";
       const requestBody = buildBody(creds.projectId);
+      const startTime = Date.now();
+
+      this.logUpstream(`发送请求`, {
+        method,
+        account: accountName,
+        group: quotaGroup,
+        attempt: attemptNum,
+        maxAttempts,
+        model: options.model,
+      });
 
       let response;
       try {
@@ -121,19 +194,70 @@ class UpstreamClient {
           limiter: this.auth.apiLimiter,
         });
       } catch (netErr) {
+        const duration = Date.now() - startTime;
+        this.logError(`网络错误`, netErr, {
+          context: {
+            method: `v1internal:${method}`,
+            group: quotaGroup,
+            account: accountName,
+            attempt: attemptNum,
+            maxAttempts,
+            duration,
+          },
+        });
+
         // Network/transport error: rotate and try next account.
         lastResponse = null;
-        this.log("warn", `Network error calling v1internal:${method} on [${quotaGroup}] ${accountName}: ${netErr.message || netErr}`);
+        
+        this.logRetry("网络错误，轮换账户", {
+          attempt: attemptNum,
+          maxAttempts,
+          account: accountName,
+          error: netErr.message || netErr,
+          nextAction: "轮换到下一个账户",
+        });
+
         if (this.auth && typeof this.auth.rotateAccount === "function") {
           this.auth.rotateAccount(quotaGroup);
         }
         continue;
       }
 
-      if (response.ok) return response;
+      const duration = Date.now() - startTime;
+
+      if (response.ok) {
+        this.logUpstream(`请求成功`, {
+          method,
+          account: accountName,
+          group: quotaGroup,
+          attempt: attemptNum,
+          maxAttempts,
+          status: response.status,
+          duration,
+        });
+        return response;
+      }
 
       // Non-429 4xx: do not retry/rotate, pass through as-is.
       if (response.status !== 429) {
+        let errorText = "";
+        try {
+          errorText = await response.clone().text();
+        } catch (_) {}
+
+        const errorDetails = this.parseErrorDetails(errorText);
+        
+        this.logUpstream(`请求失败 (${response.status})`, {
+          method,
+          account: accountName,
+          group: quotaGroup,
+          attempt: attemptNum,
+          maxAttempts,
+          status: response.status,
+          duration,
+          error: errorDetails,
+        });
+
         return response;
       }
 
@@ -145,15 +269,32 @@ class UpstreamClient {
         errorText = await response.clone().text();
       } catch (_) {}
 
+      const errorDetails = this.parseErrorDetails(errorText);
       const retryMs = this.parseRetryDelayMs(errorText);
-      this.log(`Google API Error (429) - [${quotaGroup}] ${accountName}`, errorText || "(empty 429 body)");
+
+      this.logQuota(`收到 429 限流响应`, {
+        account: accountName,
+        group: quotaGroup,
+        resetDelay: retryMs,
+      });
+
+      this.log("error", `🚫 Google API 429 错误详情`, errorDetails);
 
       if (retryMs != null && retryMs <= 5000) {
         const delay = Math.max(0, retryMs + 200);
-        this.log("info", `⏳ 429 retry after ${delay}ms on same account (${accountName})`);
+        
+        this.logRetry("短时间限流，等待重试", {
+          attempt: attemptNum,
+          maxAttempts,
+          delayMs: delay,
+          account: accountName,
+          nextAction: "同账户重试",
+        });
+
         await this.sleep(delay);
 
         // Retry once on the same account with the same request body.
+        const retryStartTime = Date.now();
         let retryResp;
         try {
           retryResp = await httpClient.callV1Internal(method, creds.accessToken, requestBody, {
@@ -162,39 +303,104 @@ class UpstreamClient {
             limiter: this.auth.apiLimiter,
           });
         } catch (netErr2) {
-          this.log(
-            "warn",
-            `Network error retrying v1internal:${method} on [${quotaGroup}] ${accountName}: ${netErr2.message || netErr2}`
-          );
+          const retryDuration = Date.now() - retryStartTime;
+          this.logError(`重试时网络错误`, netErr2, {
+            context: {
+              method: `v1internal:${method}`,
+              group: quotaGroup,
+              account: accountName,
+              attempt: attemptNum,
+              duration: retryDuration,
+            },
+          });
+
+          this.logRetry("重试失败，轮换账户", {
+            attempt: attemptNum,
+            maxAttempts,
+            account: accountName,
+            error: netErr2.message || netErr2,
+            nextAction: "轮换到下一个账户",
+          });
+
           if (this.auth && typeof this.auth.rotateAccount === "function") {
             this.auth.rotateAccount(quotaGroup);
           }
           continue;
         }
 
-        if (retryResp.ok) return retryResp;
-        if (retryResp.status !== 429) return retryResp;
+        const retryDuration = Date.now() - retryStartTime;
+
+        if (retryResp.ok) {
+          this.logUpstream(`重试成功`, {
+            method,
+            account: accountName,
+            group: quotaGroup,
+            attempt: attemptNum,
+            maxAttempts,
+            status: retryResp.status,
+            duration: retryDuration,
+          });
+          return retryResp;
+        }
+        
+        if (retryResp.status !== 429) {
+          this.logUpstream(`重试返回非 429 错误`, {
+            method,
+            account: accountName,
+            group: quotaGroup,
+            attempt: attemptNum,
+            maxAttempts,
+            status: retryResp.status,
+            duration: retryDuration,
+          });
+          return retryResp;
+        }
 
         lastResponse = retryResp;
+        
+        this.logQuota(`重试后仍然 429`, {
+          account: accountName,
+          group: quotaGroup,
+        });
       }
 
       // Rotate to next account (either delay>5s, no delay, or retry still 429).
-      this.log("warn", `⚠️ 429 encountered. Rotating to next account for [${quotaGroup}]...`);
+      this.logRetry("需要轮换账户", {
+        attempt: attemptNum,
+        maxAttempts,
+        delayMs: retryMs,
+        account: accountName,
+        nextAction: retryMs && retryMs > 5000 ? `延迟过长 (${retryMs}ms)，轮换账户` : "轮换到下一个账户",
+      });
+
       if (this.auth && typeof this.auth.rotateAccount === "function") {
         this.auth.rotateAccount(quotaGroup);
       }
     }
 
     // Exhausted: return the last upstream 429 response as-is (status/headers/body passthrough).
-    if (lastResponse) return lastResponse;
+    if (lastResponse) {
+      this.logError(`所有账户都已耗尽`, null, {
+        context: {
+          method: `v1internal:${method}`,
+          group: quotaGroup,
+          totalAttempts: maxAttempts,
+        },
+      });
+      return lastResponse;
+    }
 
     const error = new Error(`Upstream call exhausted without a response (v1internal:${method})`);
     error.status = 500;
+    this.logError(`上游调用失败`, error, {
+      context: { method: `v1internal:${method}`, group: quotaGroup },
+    });
     throw error;
   }
 
   async fetchAvailableModels() {
     const accessToken = await this.auth.getCurrentAccessToken();
+    this.log("info", "📋 获取可用模型列表");
     return httpClient.fetchAvailableModels(accessToken, this.auth.apiLimiter);
   }
 
@@ -208,6 +414,7 @@ class UpstreamClient {
    */
   async countTokens(body, options = {}) {
     const inferredModel = options.model || body?.request?.model || body?.model;
+    this.log("info", `🔢 计算 Token 数量 (${inferredModel || "unknown model"})`);
     return this.callV1Internal("countTokens", {
       group: options.group,
       model: inferredModel,

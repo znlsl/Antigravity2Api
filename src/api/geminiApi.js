@@ -20,7 +20,12 @@ class GeminiApi {
   }
 
   log(title, data) {
-    if (this.logger) return this.logger(title, data);
+    if (this.logger) {
+      if (typeof this.logger.log === "function") {
+        return this.logger.log(title, data);
+      }
+      return this.logger(title, data);
+    }
     if (data !== undefined && data !== null) {
       console.log(`[${title}]`, typeof data === "string" ? data : JSON.stringify(data, null, 2));
     } else {
@@ -30,7 +35,14 @@ class GeminiApi {
 
   logDebug(title, data) {
     if (!this.debugRequestResponse) return;
-    this.log(title, data);
+    this.log("debug", `${title}`, data);
+  }
+
+  logStream(event, options = {}) {
+    if (this.logger && typeof this.logger.logStream === "function") {
+      return this.logger.logStream(event, options);
+    }
+    this.log("stream", { event, ...options });
   }
 
   async logStreamContent(stream, label) {

@@ -107,14 +107,25 @@ class AuthManager {
 
   log(title, data) {
     if (this.logger) {
-      this.logger(title, data);
-    } else {
-      if (data !== undefined && data !== null) {
-        console.log(`[${title}]`, typeof data === "string" ? data : JSON.stringify(data, null, 2));
-      } else {
-        console.log(`[${title}]`);
+      // 支持新的日志 API
+      if (typeof this.logger.log === "function") {
+        return this.logger.log(title, data);
       }
+      // 兼容旧的日志函数
+      return this.logger(title, data);
     }
+    if (data !== undefined && data !== null) {
+      console.log(`[${title}]`, typeof data === "string" ? data : JSON.stringify(data, null, 2));
+    } else {
+      console.log(`[${title}]`);
+    }
+  }
+
+  logAccount(action, options = {}) {
+    if (this.logger && typeof this.logger.logAccount === "function") {
+      return this.logger.logAccount(action, options);
+    }
+    this.log("account", { action, ...options });
   }
 
   async waitForApiSlot() {
@@ -162,10 +173,11 @@ class AuthManager {
     const nextIndex = (this.getCurrentAccountIndex(g) + 1) % this.accounts.length;
     this.setCurrentAccountIndex(g, nextIndex);
     const accountName = path.basename(this.accounts[nextIndex].filePath);
-    this.log(
-      "info",
-      `🔄 [${g}] Rotating to account ${nextIndex + 1}/${this.accounts.length} (${accountName})`
-    );
+    this.logAccount(`轮换账户`, {
+      group: g,
+      account: accountName,
+      reason: `切换到第 ${nextIndex + 1}/${this.accounts.length} 个账户`,
+    });
     return true;
   }
 
@@ -240,11 +252,11 @@ class AuthManager {
       }
 
       if (loadedCount === 0) {
-        this.log("warn", "No accounts found.");
+        this.log("warn", "⚠️ 未找到任何账户");
         return;
       }
 
-      this.log("info", `✅ Loaded ${this.accounts.length} accounts.`);
+      this.log("success", `✅ 已加载 ${this.accounts.length} 个账户`);
 
       for (const account of this.accounts) {
         this.tokenRefresher.scheduleRefresh(account);

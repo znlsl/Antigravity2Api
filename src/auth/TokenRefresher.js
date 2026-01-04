@@ -7,12 +7,24 @@ class TokenRefresher {
   }
 
   log(title, data) {
-    if (this.logger) return this.logger(title, data);
+    if (this.logger) {
+      if (typeof this.logger.log === "function") {
+        return this.logger.log(title, data);
+      }
+      return this.logger(title, data);
+    }
     if (data !== undefined && data !== null) {
       console.log(`[${title}]`, typeof data === "string" ? data : JSON.stringify(data, null, 2));
     } else {
       console.log(`[${title}]`);
     }
+  }
+
+  logAccount(action, options = {}) {
+    if (this.logger && typeof this.logger.logAccount === "function") {
+      return this.logger.logAccount(action, options);
+    }
+    this.log("account", { action, ...options });
   }
 
   async refresh(account) {
@@ -36,9 +48,10 @@ class TokenRefresher {
     if (delay < 0) delay = 0;
 
     account.refreshTimer = setTimeout(() => {
-      this.log("info", `⏰ Auto-refreshing token for ${path.basename(account.filePath)}`);
+      const accountName = path.basename(account.filePath);
+      this.logAccount("自动刷新 Token", { account: accountName });
       this.refresh(account).catch((e) => {
-        this.log("error", `❌ Auto-refresh failed for ${path.basename(account.filePath)}: ${e.message || e}`);
+        this.log("error", `❌ 自动刷新失败 (${accountName}): ${e.message || e}`);
         // 失败后 1 分钟重试
         account.refreshTimer = setTimeout(() => {
           this.scheduleRefresh(account);
